@@ -65,4 +65,49 @@ python app.py
 
 ---
 
+## Rebuilding the .exe (Windows) 🔁
+
+Two helper scripts are included to rebuild a single-file, no-console executable using PyInstaller:
+
+- `build_exe.ps1` — PowerShell script (recommended). Run from project root:
+  - `.uild_exe.ps1`
+- `build_exe.bat` — Batch file for Command Prompt (double-click or run `build_exe.bat`).
+
+What the scripts do:
+- Activate the local `.venv` if it exists (PowerShell script attempts activation).
+- Ensure `pyinstaller` is installed.
+- Clean previous `build/`, `dist/`, and the spec file.
+- Run:
+  - `python -m PyInstaller --onefile --noconsole --name BrioCapture app.py`
+- Output exe location: `dist\BrioCapture.exe`.
+
+Notes:
+- The exe is built with `--noconsole` (GUI). Remove `--noconsole` in the script if you need a console for debugging.
+- If the build fails due to missing hidden imports or data files, re-run PyInstaller with `--hidden-import` options or modify the `.spec` file — I can help automate that if needed.
+
+---
+
+## Building the Windows Installer (Inno Setup) 🛠️
+
+I added an Inno Setup script and a PowerShell helper to build an installer:
+
+Files:
+- `installer/BrioCaptureInstaller.iss` — The Inno Setup script that packages the single-file exe and the README into Program Files, creates Start Menu and Desktop shortcuts, and offers a post-install launch.
+- `build_installer.ps1` — PowerShell script that looks for the Inno Setup Compiler (`ISCC.exe`) in typical locations or uses the `INNO_ISCC` env var, then compiles the .iss and places the output in `dist\installer`.
+
+How to build:
+1. Install Inno Setup (https://jrsoftware.org) if you don't have it.
+2. Ensure `dist\BrioCapture.exe` exists (build it with `.uild_exe.ps1`).
+3. Run:
+   - `.uild_installer.ps1`
+   - Or pass a custom ISCC path: `.uild_installer.ps1 -ISCCPath "C:\Path\To\ISCC.exe"`
+
+Notes:
+- The script assumes the Inno Setup Compiler version 6 (typical install path: `C:\Program Files (x86)\Inno Setup 6\ISCC.exe`).
+- A default icon generator is provided in `tools/generate_icon.py` and the build scripts will generate `installer/brio_icon.ico` automatically when needed.
+- The Inno Setup script uses `installer\brio_icon.ico` for the installer icon and also installs the icon into the app folder.
+- I can add code signing (signtool) in a follow-up if you have a signing certificate.
+
+---
+
 If you'd like, I can add a short changelog entry or a GitHub-friendly badge/metadata — tell me which you'd prefer next. ✨
