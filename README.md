@@ -1,4 +1,4 @@
-# Oba_capture — Logitech Brio Capture Controller 📸
+# MB-Capture — Logitech Brio Capture Controller 📸
 
 A lightweight desktop app for controlling Logitech Brio (and compatible) webcams with digital zoom, pan, manual focus, and reliable image capture workflows.
 
