@@ -1,0 +1,63 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+env/
+venv/
+ENV/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Installer caches
+pip-wheel-metadata/
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Logs and databases
+*.log
+*.sqlite3
+
+# Editor directories and files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS generated files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Environment variables and secrets
+.env
+.env.local
+*.key
+
+# Captured images and large media
+captures/
+
+# Test / coverage
+htmlcov/
+.coverage
+.coverage.*
+
+# Temporary files
+*.tmp
+*.bak
+*~
+
+# Pillow / PIL cache
+*.pyc
+
+# Optional: ignore local config
+config.yaml
+settings.yaml
