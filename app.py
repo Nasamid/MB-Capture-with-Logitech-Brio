@@ -1,6 +1,8 @@
 import customtkinter as ctk
 import tkinter as tk
 from tkinter import messagebox
+import sys
+import time
 import cv2
 import glob
 import threading
@@ -15,9 +17,9 @@ ctk.set_default_color_theme("blue")
 
 
 class CameraZoomController:
-    def __init__(self, root):
+    def __init__(self, root, cam_index=None, auto_start=True):
         self.root = root
-        self.root.title("Logitech Brio Capture Controller")
+        self.root.title("Logitech Brio Camera Zoom Control")
         
         # Set default geometry - will update after window is realized
         self.root.geometry("960x1050+0+0")
@@ -31,10 +33,27 @@ class CameraZoomController:
         self.camera_thread = None
         self.init_thread = None
         self.is_loading = False
-        self.selected_camera_index = 0
+        # Use provided camera index if given (mirrors logi_try launch behavior)
+        if cam_index is not None:
+            try:
+                self.selected_camera_index = int(cam_index)
+            except Exception:
+                self.selected_camera_index = 0
+        else:
+            self.selected_camera_index = 0
         self.available_cameras = {}
         self.camera_width = 0
         self.camera_height = 0
+        # Preview defaults for fast startup (may be changed when camera opens)
+        self.preview_width = 960
+        self.preview_height = 540
+        # Lock to protect camera operations when switching resolutions for capture
+        self.cap_lock = threading.Lock()
+
+        # Focus control properties (use cv2 constants if available, else fall back to common values)
+        self.focus_prop = getattr(cv2, 'CAP_PROP_FOCUS', 28)
+        self.autofocus_prop = getattr(cv2, 'CAP_PROP_AUTOFOCUS', 39)
+
         self.sn_history = []
         self.sn_history_index = -1
         # Orientation appended to filename: either 'TOP' or 'BOTTOM'
@@ -60,6 +79,14 @@ class CameraZoomController:
         # Defer camera detection to avoid blocking UI (run in background thread)
         # Only detect cameras, don't initialize yet - wait for user selection
         self.root.after(100, lambda: threading.Thread(target=self.detect_cameras, daemon=True).start())
+
+        # Auto-start preview similar to logi_try (optional)
+        if auto_start:
+            try:
+                self.status_display.configure(text="Auto-starting camera...", text_color="#FFA500")
+            except Exception:
+                pass
+            self.initialize_camera()
     
     def setup_window_geometry(self):
         """Set window geometry after it's realized"""
@@ -553,6 +580,10 @@ class CameraZoomController:
     
     def initialize_camera(self):
         """Initialize the camera in background thread"""
+        # Avoid starting multiple initialization attempts
+        if self.is_running or (self.cap and getattr(self.cap, "isOpened", lambda: False)()) or (self.init_thread and self.init_thread.is_alive()):
+            print("Initialize skipped: already initializing or running")
+            return
         self.is_loading = True
         self.init_thread = threading.Thread(target=self._initialize_camera_background, daemon=True)
         self.init_thread.start()
@@ -560,11 +591,15 @@ class CameraZoomController:
     def _initialize_camera_background(self):
         """Initialize the camera (runs in background)"""
         try:
-            self.cap = cv2.VideoCapture(self.selected_camera_index)
+            # Use DirectShow on Windows for faster startup
+            if platform.system() == "Windows":
+                self.cap = cv2.VideoCapture(self.selected_camera_index, cv2.CAP_DSHOW)
+            else:
+                self.cap = cv2.VideoCapture(self.selected_camera_index)
             
-            # Fast timeout for camera to be ready (reduced from 5s to 1s)
+            # Fast timeout for camera to be ready
             timeout = 0
-            while not self.cap.isOpened() and timeout < 10:  # 1 second timeout
+            while not self.cap.isOpened() and timeout < 10:
                 timeout += 1
                 threading.Event().wait(0.1)
             
@@ -572,15 +607,31 @@ class CameraZoomController:
                 # Set camera buffer size to 1 (grab latest frame immediately)
                 self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 
-                # Request 4K resolution for Brio (3840x2160)
-                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 3840)
-                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 2160)
+                # Use lower preview resolution for fast startup
+                self.preview_width = 1920
+                self.preview_height = 1080
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.preview_width)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.preview_height)
                 
-                # Get actual camera resolution (may be negotiated lower if 4K not available)
+                # Try to grab an immediate frame to show quick preview
+                try:
+                    with self.cap_lock:
+                        ret, frame = self.cap.read()
+                    if ret:
+                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        frame_rgb = cv2.resize(frame_rgb, (960, 540))
+                        image = Image.fromarray(frame_rgb)
+                        photo = ImageTk.PhotoImage(image)
+                        # Update preview_label on main thread
+                        self.root.after(0, lambda p=photo: (self.preview_label.configure(image=p, text=""), setattr(self.preview_label, "image", p)))
+                except Exception:
+                    pass
+
+                # Determine actual preview resolution
                 self.camera_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                 self.camera_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                
-                print(f"Camera opened: {self.camera_width}×{self.camera_height}")
+
+                print(f"Camera opened (preview): {self.camera_width}×{self.camera_height}")
                 
                 # Update resolution display
                 self.resolution_display.configure(
@@ -588,16 +639,22 @@ class CameraZoomController:
                     text_color="#00B4FF"
                 )
                 
-                # Minimal warm-up: discard only 5 frames quickly
+                # Minimal warm-up: discard only 3 frames quickly for faster startup
                 print("Warming up camera...")
                 frame_count = 0
-                for i in range(5):  # Reduced to 5 frames for fast startup
-                    ret, frame = self.cap.read()
+                for i in range(3):
+                    with self.cap_lock:
+                        ret, frame = self.cap.read()
                     if ret:
                         frame_count += 1
-                    # No delay - read as fast as possible
                 
-                print(f"Warm-up complete: read {frame_count}/5 frames")
+                print(f"Warm-up complete: read {frame_count}/3 frames")
+
+                # Reapply any user focus setting after resolution negotiation
+                try:
+                    self.reapply_focus()
+                except Exception:
+                    pass
                 
                 self.status_display.configure(text="Camera Connected ✓", text_color="#00FF00")
                 self.is_running = True
@@ -621,7 +678,8 @@ class CameraZoomController:
         
         while self.is_running and self.cap:
             try:
-                ret, frame = self.cap.read()
+                with self.cap_lock:
+                    ret, frame = self.cap.read()
                 if not ret or frame is None:
                     retry_count += 1
                     if retry_count > max_retries:
@@ -749,11 +807,32 @@ class CameraZoomController:
         """Update camera focus"""
         self.focus_level = int(float(value))
         try:
-            if self.cap and self.cap.isOpened():
-                # Try to set focus property
-                self.cap.set(28, self.focus_level)
-                self.status_display.configure(text=f"Focus: {self.focus_level}", text_color="#FFA500")
-        except Exception as e:
+            # Apply focus settings safely
+            self.reapply_focus()
+            self.status_display.configure(text=f"Focus: {self.focus_level}", text_color="#FFA500")
+        except Exception:
+            pass
+
+    def reapply_focus(self):
+        """Disable autofocus if available and set manual focus to the current level."""
+        try:
+            with self.cap_lock:
+                if not (self.cap and self.cap.isOpened()):
+                    return
+
+                # Try to disable autofocus first (if supported)
+                try:
+                    if self.autofocus_prop is not None:
+                        self.cap.set(self.autofocus_prop, 0)
+                except Exception:
+                    pass
+
+                # Try to set focus value
+                try:
+                    self.cap.set(self.focus_prop, self.focus_level)
+                except Exception:
+                    pass
+        except Exception:
             pass
     
     def apply_zoom(self):
@@ -861,11 +940,51 @@ class CameraZoomController:
                 self.status_display.configure(text=f"Folder error: {str(e)[:30]}", text_color="#FF0000")
                 return
 
-            # Read frame from camera
-            ret, frame = self.cap.read()
-            if not ret:
-                self.status_display.configure(text="Failed to capture frame", text_color="#FF0000")
-                return
+            # Attempt to capture at full resolution (3840x2160) by temporarily switching the camera
+            full_w, full_h = 3840, 2160
+            captured = False
+            frame = None
+            try:
+                with self.cap_lock:
+                    # Save current resolution
+                    prev_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    prev_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+                    # Request full resolution for capture
+                    self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, full_w)
+                    self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, full_h)
+
+                    # Give camera a moment to re-negotiate
+                    threading.Event().wait(0.2)
+
+                    # Read a couple frames to settle
+                    for _ in range(2):
+                        ret, _ = self.cap.read()
+
+                    # Final read for capture
+                    ret, frame = self.cap.read()
+                    if ret and frame is not None:
+                        captured = True
+
+                    # Restore preview resolution
+                    self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.preview_width)
+                    self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.preview_height)
+            except Exception:
+                captured = False
+
+            if not captured:
+                # Fallback to current preview resolution for capture
+                with self.cap_lock:
+                    ret, frame = self.cap.read()
+                if not ret or frame is None:
+                    self.status_display.configure(text="Failed to capture frame", text_color="#FF0000")
+                    return
+
+            # After any temporary resolution changes, make sure focus is re-applied
+            try:
+                self.reapply_focus()
+            except Exception:
+                pass
 
             # Apply digital zoom with pan offset to full resolution frame
             if self.digital_zoom_level > 1.0:
@@ -961,8 +1080,15 @@ class CameraZoomController:
 
 
 def main():
+    cam_index = None
+    if len(sys.argv) > 1:
+        try:
+            cam_index = int(sys.argv[1])
+        except ValueError:
+            print("Invalid camera index argument, using defaults.")
+
     root = ctk.CTk()
-    app = CameraZoomController(root)
+    app = CameraZoomController(root, cam_index=cam_index, auto_start=True)
     root.protocol("WM_DELETE_WINDOW", app.on_closing)
     # Bind space key globally
     root.bind("<space>", lambda e: app.capture_image())
